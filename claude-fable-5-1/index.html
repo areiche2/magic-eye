@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file: blob: data:; connect-src https: http: data: blob:; worker-src blob:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Magic Eye Solver</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%232f6fed%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%226%22 fill=%22%23fff%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1>Magic Eye Solver</h1>
+    <p class="tagline">Drop in an autostereogram and get back the hidden depth image. Everything runs in your browser; nothing is uploaded anywhere.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card" id="input-card">
+    <h2>1. Load a stereogram</h2>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop an image here or click to choose a file">
+      <div class="dz-inner">
+        <strong>Drop an image here</strong>, click to choose a file, or paste one from the clipboard.
+        <input type="file" id="file-input" accept="image/*" hidden>
+      </div>
+    </div>
+    <div class="row url-row">
+      <label for="url-input" class="sr-only">Image URL</label>
+      <input type="url" id="url-input" placeholder="…or paste an image URL (https://…)" spellcheck="false" autocomplete="off">
+      <button id="url-load" type="button" class="secondary">Load URL</button>
+    </div>
+    <div class="row samples">
+      <span>No image handy? Try a generated sample:</span>
+      <button type="button" class="chip" data-sample="sphere">Sphere</button>
+      <button type="button" class="chip" data-sample="torus">Torus</button>
+      <button type="button" class="chip" data-sample="text">Text</button>
+      <button type="button" class="chip" data-sample="dots">Random dots</button>
+    </div>
+    <p id="load-status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card" id="settings-card">
+    <div class="card-head">
+      <h2>2. Solve</h2>
+      <div class="actions">
+        <button id="solve-btn" type="button" class="primary" disabled>Solve</button>
+        <button id="cancel-btn" type="button" class="secondary" hidden>Cancel</button>
+      </div>
+    </div>
+    <div class="progress" id="progress" hidden>
+      <div class="bar"><div class="fill" id="progress-fill"></div></div>
+      <span id="progress-text"></span>
+    </div>
+
+    <details id="advanced">
+      <summary>Settings</summary>
+      <div class="grid">
+        <label>Processing width
+          <select id="opt-maxWidth">
+            <option value="400">400 px (fastest)</option>
+            <option value="640" selected>640 px (default)</option>
+            <option value="800">800 px</option>
+            <option value="1000">1000 px</option>
+            <option value="1200">1200 px (slow)</option>
+          </select>
+          <small>Wider images are shrunk to this before solving.</small>
+        </label>
+        <label>Pattern repeat (period)
+          <div class="inline">
+            <select id="opt-periodMode"><option value="auto" selected>Auto-detect</option><option value="manual">Manual</option></select>
+            <input type="number" id="opt-period" min="4" step="0.5" value="" placeholder="px" disabled>
+          </div>
+          <small>Horizontal repeat of the background, in pixels of the original image. Auto-detect looks between 2.5% and 45% of the processed width; outside that, set it here or click the curve below.</small>
+        </label>
+        <label>Search range, nearer
+          <div class="inline"><input type="range" id="opt-nearFrac" min="5" max="60" value="35"><output for="opt-nearFrac" id="out-nearFrac">35%</output></div>
+          <small>How much shorter than the period the repeat may get for near objects.</small>
+        </label>
+        <label>Search range, farther
+          <div class="inline"><input type="range" id="opt-farFrac" min="0" max="50" value="15"><output for="opt-farFrac" id="out-farFrac">15%</output></div>
+          <small>How much longer than the period for objects behind the background.</small>
+        </label>
+        <label>Matching window
+          <div class="inline"><input type="range" id="opt-window" min="1" max="10" value="3"><output for="opt-window" id="out-window">5 px</output></div>
+          <small>Bigger windows are steadier on smooth patterns; smaller keep finer detail.</small>
+        </label>
+        <label>Method
+          <select id="opt-method">
+            <option value="sgm" selected>Quality (semi-global smoothing)</option>
+            <option value="wta">Fast (local best match only)</option>
+          </select>
+          <small>Quality minimises a smoothness energy; Fast is a plain local match.</small>
+        </label>
+        <label>Smoothing paths
+          <select id="opt-paths"><option value="8" selected>8 directions</option><option value="4">4 directions</option></select>
+        </label>
+        <label>Slope penalty (P1)
+          <div class="inline"><input type="range" id="opt-p1" min="0" max="20" step="0.5" value="4"><output for="opt-p1" id="out-p1">4</output></div>
+          <small>Cost of a one-step depth change between neighbours.</small>
+        </label>
+        <label>Edge penalty (P2)
+          <div class="inline"><input type="range" id="opt-p2" min="0" max="200" step="1" value="100"><output for="opt-p2" id="out-p2">100</output></div>
+          <small>Cost of a depth jump. Raise to remove speckle, lower to keep small details.</small>
+        </label>
+        <label class="check"><input type="checkbox" id="opt-median" checked> Median filter the result</label>
+        <label class="check"><input type="checkbox" id="opt-invert"> Invert depth (cross-eyed stereograms)</label>
+        <label class="check"><input type="checkbox" id="opt-stretch" checked> Stretch contrast to the depth actually found</label>
+        <label>Display
+          <select id="opt-colormap"><option value="gray" selected>Grayscale</option><option value="viridis">Viridis</option><option value="inferno">Inferno</option></select>
+        </label>
+        <div class="grid-actions"><button type="button" id="reset-btn" class="secondary">Reset to defaults</button></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card" id="result-card" hidden>
+    <div class="card-head">
+      <h2>3. Result</h2>
+      <div class="actions view-toggle" role="tablist">
+        <button type="button" class="tab active" data-view="depth" role="tab" aria-selected="true">Depth</button>
+        <button type="button" class="tab" data-view="confidence" role="tab" aria-selected="false">Confidence</button>
+        <button type="button" class="tab" data-view="source" role="tab" aria-selected="false">Source</button>
+      </div>
+    </div>
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="view-canvas"></canvas>
+    </div>
+    <div class="row result-actions">
+      <button type="button" id="download-btn" class="primary">Download depth PNG</button>
+      <button type="button" id="download-full-btn" class="secondary">Download at original size</button>
+      <span id="result-info" class="info"></span>
+    </div>
+    <div class="period-panel">
+      <div class="period-head"><strong>Pattern repeat</strong> <span id="period-info"></span></div>
+      <canvas id="period-canvas" height="110" tabindex="0" role="slider" aria-label="Self-similarity versus horizontal shift. Click a notch, or focus and use the arrow keys then Enter, to force that period."></canvas>
+      <small>Mean difference between the image and itself shifted right by the given amount, in pixels of the original image. Notches are repeats; the shaded band is the range searched. Click the curve (or focus it and use ← → then Enter) to force a different period.</small>
+    </div>
+    <p id="quality-note" class="note" hidden></p>
+  </section>
+
+  <section class="card method">
+    <h2>How it works</h2>
+    <p>An autostereogram hides a depth map by repeating a strip of pattern across each row and shrinking the repeat distance wherever the hidden surface comes closer. Every point on the hidden surface links two pixels, <code>x − s/2</code> and <code>x + s/2</code>, that were given the same colour, where <code>s</code> is the local repeat. Solving the picture means recovering <code>s</code> at every pixel, then turning it into brightness (near is bright by default).</p>
+    <p>This is an inverse problem without a unique answer: many shifts match a repeating texture, <code>s</code> and <code>s + period</code> both fit in flat regions, and the sign of depth depends on whether the picture was made for parallel or cross-eyed viewing. The solver picks the answer that minimises an energy</p>
+    <p class="formula">E(s) = Σ<sub>p</sub> C(p, s<sub>p</sub>) + Σ<sub>neighbours</sub> P1·[|s<sub>p</sub> − s<sub>q</sub>| = 1] + P2·[|s<sub>p</sub> − s<sub>q</sub>| &gt; 1]</p>
+    <p>where <code>C</code> is the truncated, window-averaged difference between the two half-shifted copies of the image at shift <code>s</code> (the data term), and the P1/P2 terms are a smoothness prior that lets depth change gently for a small price and pays a fixed price for a real edge. The background period is found first from the self-similarity curve, the shift range is limited to a band around it (removing the period ambiguity), and the energy is minimised approximately with semi-global matching: dynamic programming along eight directions, summed, then a per-pixel winner with sub-pixel refinement.</p>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <p>Runs entirely in this page. No files, URLs, or results leave your browser. Loading from a URL asks your browser to fetch that one image directly; sites that forbid cross-origin reads will not load, so download the picture and drop it in instead.</p>
+</footer>
+
+<script src="solver.js"></script>
+<script src="stereogram.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

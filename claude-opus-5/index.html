@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magic Eye Solver — recover the depth map from an autostereogram</title>
+<meta name="description" content="Recovers the hidden grayscale depth map from a Magic Eye autostereogram. Runs entirely in your browser.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Magic Eye Solver</h1>
+  <p class="sub">
+    Recovers the grayscale depth map hidden inside a single-image autostereogram.
+    Formulated as regularised stereo matching against the image itself — census
+    matching costs, semi-global aggregation, and an edge-preserving
+    total-variation prior. <a href="#how">How it works ↓</a>
+  </p>
+  <div class="badges">
+    <span class="badge">100% in-browser — nothing is uploaded</span>
+    <span class="badge neutral">No CDNs, no dependencies, no network calls</span>
+    <span class="badge neutral" id="engineBadge">engine: —</span>
+  </div>
+</header>
+
+<div class="io">
+  <div class="drop" id="drop" tabindex="0" role="button"
+       aria-label="Choose an image file, or drag one here, or paste from the clipboard">
+    <strong>Drop an image, click to browse, or paste</strong>
+    <span>PNG, JPEG, WebP, GIF · never leaves your machine</span>
+    <input type="file" id="file" accept="image/*" class="sr">
+  </div>
+
+  <div class="urlbox">
+    <label for="url">…or load from a URL</label>
+    <div class="urlrow">
+      <input type="url" id="url" placeholder="https://example.com/magic-eye.jpg"
+             spellcheck="false" autocomplete="off">
+      <button id="loadUrl">Load</button>
+    </div>
+    <p class="hint">
+      The browser fetches this directly. Sites that don’t send CORS headers will
+      be blocked by the browser — if that happens, save the image and drop it above.
+    </p>
+  </div>
+</div>
+
+<details class="panel">
+  <summary>Built-in examples &amp; self-test</summary>
+  <div class="panel-body">
+    <div class="grid">
+      <div class="ctl">
+        <label for="scene">Example scene</label>
+        <select id="scene"></select>
+        <p class="note">Generated in-page with the canonical SIRDS algorithm
+          (Thimbleby/Inglis/Witten 1994), so the true depth map is known exactly.</p>
+      </div>
+      <div class="ctl">
+        <label for="genE">Eye separation E <span class="v" id="genEv">160 px</span></label>
+        <input type="range" id="genE" min="80" max="280" step="4" value="160">
+        <p class="note">Far-plane period is E/2 — the disparity upper bound.</p>
+      </div>
+      <div class="ctl">
+        <label for="genMu">Depth of field µ <span class="v" id="genMuv">0.33</span></label>
+        <input type="range" id="genMu" min="0.1" max="0.6" step="0.01" value="0.333">
+      </div>
+      <div class="ctl">
+        <label>Actions</label>
+        <div class="row">
+          <button id="genBtn" class="ghost">Generate</button>
+          <button id="selfTest">Run self-test</button>
+        </div>
+        <p class="note">Self-test encodes a known depth map, solves it, and scores
+          the result against ground truth.</p>
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="genColour" checked> Colour carrier (vs. black &amp; white dots)</label>
+    </div>
+    <div id="testResult"></div>
+  </div>
+</details>
+
+<details class="panel" id="advPanel">
+  <summary>Solver settings</summary>
+  <div class="panel-body">
+    <div class="grid">
+      <div class="ctl">
+        <label for="quality">Quality</label>
+        <select id="quality">
+          <option value="fast">Fast — 120k px, 4 paths</option>
+          <option value="balanced" selected>Balanced — 260k px, 4 paths</option>
+          <option value="best">Best — 450k px, 8 paths</option>
+        </select>
+        <p class="note">Working resolution and number of aggregation paths.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="periodMode">Carrier period T</label>
+        <select id="periodMode">
+          <option value="auto" selected>Automatic</option>
+          <option value="manual">Manual</option>
+        </select>
+        <div class="row" style="margin-top:8px">
+          <input type="number" id="periodVal" min="8" max="600" step="1" value="0" disabled>
+          <span class="note" style="margin:0">px</span>
+        </div>
+        <p class="note">T is the far-plane separation (E/2) and the disparity
+          upper bound. If the result looks like noise, set this by hand.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="smooth">Smoothness λ (P2) <span class="v" id="smoothv">26</span></label>
+        <input type="range" id="smooth" min="6" max="70" step="2" value="26">
+        <p class="note">Weight of the total-variation prior. Higher = cleaner
+          surfaces, softer silhouettes.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="vweight">Vertical prior weight <span class="v" id="vweightv">2.0</span></label>
+        <input type="range" id="vweight" min="1" max="4" step="0.5" value="2">
+        <p class="note">Scan lines are generated independently, so vertical
+          evidence is cleaner than horizontal. This is the biggest quality lever.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="uniq">Uniqueness threshold <span class="v" id="uniqv">0.01</span></label>
+        <input type="range" id="uniq" min="0" max="0.3" step="0.005" value="0.01">
+        <p class="note">Rejects a pixel when the winning match's margin is a small
+          fraction of that pixel's own cost spread — i.e. aliased, echoed, or
+          untextured. Rejected pixels are inpainted. Raising this trades
+          coverage for caution; it usually makes results worse, not better.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="mu">Depth linearisation µ <span class="v" id="muv">0.33</span></label>
+        <input type="range" id="mu" min="0.1" max="0.6" step="0.01" value="0.333">
+        <p class="note">Inverts s(Z) = (1−µZ)E/(2−µZ). Corrects the generator’s
+          non-linearity, which otherwise bows flat surfaces.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="align">Alignment <span class="v" id="alignv">centred</span></label>
+        <input type="range" id="align" min="-0.5" max="0.5" step="0.05" value="0">
+        <p class="note">A match at p ties pixels p±d/2. Symmetric generators mean
+          depth at p (centred); asymmetric left-to-right ones mean depth at p+d/2
+          (set +0.5). Unknowable from the image — nudge if the result looks shifted.</p>
+      </div>
+
+      <div class="ctl">
+        <label for="searchLo">Search range <span class="v" id="searchv">0.60 – 1.10 × T</span></label>
+        <input type="range" id="searchLo" min="0.35" max="0.9" step="0.05" value="0.6">
+        <p class="note">Physically d/T ∈ [2(1−µ)/(2−µ), 1]. Widen only if depth
+          looks clipped; wider costs memory and loses more border.</p>
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="linearise" checked> Linearise depth (invert s(Z))</label>
+      <label><input type="checkbox" id="invert"> Invert (near = dark)</label>
+      <label><input type="checkbox" id="crop"> Crop to informative area <span class="note" style="margin:0">(hides the extrapolated border)</span></label>
+      <label><input type="checkbox" id="autoSolve" checked> Re-solve automatically when settings change</label>
+    </div>
+    <div class="checks">
+      <button id="resetBtn" class="ghost">Reset to defaults</button>
+    </div>
+  </div>
+</details>
+
+<div class="actions">
+  <button id="solveBtn" disabled>Solve</button>
+  <button id="downloadBtn" class="ghost" disabled>Download depth map</button>
+  <div class="prog"><i id="progBar"></i></div>
+  <div class="status" id="status">Load an image to begin</div>
+</div>
+
+<div id="messages" aria-live="polite"></div>
+
+<div class="results">
+  <figure>
+    <figcaption>Autostereogram <em id="srcMeta"></em></figcaption>
+    <div class="canvas-hold" id="srcHold"><div class="empty">No image loaded</div></div>
+  </figure>
+  <figure>
+    <figcaption>Recovered depth map <em id="outMeta"></em></figcaption>
+    <div class="canvas-hold" id="outHold"><div class="empty">Nothing solved yet</div></div>
+  </figure>
+</div>
+
+<details class="panel" id="diagPanel" style="margin-top:18px">
+  <summary>Diagnostics</summary>
+  <div class="panel-body"><dl class="diag" id="diag"></dl></div>
+</details>
+
+<details class="panel" id="how" style="margin-top:18px">
+  <summary>How it works, and why the answer isn’t unique</summary>
+  <div class="panel-body">
+    <p style="margin-top:14px">
+      An autostereogram is built by taking a depth map <code>Z</code> and, for
+      every pixel, forcing two pixels a distance <code>s</code> apart to be the
+      same colour, where
+      <code>s(Z) = (1−µZ)·E/(2−µZ)</code>. Everything not pinned by a constraint
+      is filled at random, and each scan line is done independently. So the
+      image doesn’t store intensities that mean anything — it stores
+      <em>which pairs of pixels are tied together</em>. Recovering the depth map
+      means recovering that disparity field.
+    </p>
+    <p>
+      That inverse is genuinely ill-posed, in four separate ways:
+    </p>
+    <ul>
+      <li><strong>Period aliasing.</strong> If the carrier repeats with period
+        <code>T</code>, then <code>d</code>, <code>d±T</code>, <code>d±2T</code>
+        all fit the data identically. This is the classic wallpaper problem.</li>
+      <li><strong>Echoes.</strong> Constraints compose: if <code>a=b</code> and
+        <code>b=c</code> then <code>a=c</code> — a match the generator never
+        intended, corresponding to no surface at all. These are
+        <em>exactly</em> consistent, so no better matching can remove them.</li>
+      <li><strong>Untextured carrier.</strong> Where the pattern is locally flat,
+        many disparities match equally well.</li>
+      <li><strong>Half-occlusion.</strong> Hidden-surface removal deletes some
+        constraints entirely, leaving pixels with no valid partner.</li>
+    </ul>
+    <p>
+      So there is no single right answer, and the question becomes which
+      functional to minimise. This solver takes the MAP estimate,
+      <code>E(d) = Σ D(d) + λ Σ V(d, d′)</code>, with a census-transform data
+      term <code>D</code> (invariant to shading, robust to JPEG, computed across
+      all three colour channels) and a <strong>truncated-linear / total-variation
+      prior</strong> <code>V</code>. The prior choice is what actually decides
+      the answer: a quadratic penalty — the usual default — would round off the
+      object silhouette, which is the entire signal. TV permits one sharp jump
+      as cheaply as many small ones, so it prefers piecewise-smooth depth with
+      crisp edges. Minimisation is by semi-global matching over 4 or 8 paths.
+    </p>
+    <p>
+      One detail specific to this problem is worth the emphasis: because scan
+      lines are generated independently, matching noise is independent per row
+      while the true depth is strongly correlated vertically. Weighting the
+      vertical prior above the horizontal one is therefore a large, free win.
+    </p>
+    <p>
+      Depth is finally recovered metrically by inverting the separation
+      function, <code>Z = (E−2s)/(µ(E−s))</code>, with <code>E</code>
+      self-calibrated from the solution (the far plane is the largest
+      separation). Absolute scale is still a gauge freedom: if the scene never
+      reaches the near or far plane, no method can know where those planes were.
+    </p>
+    <p style="color:var(--muted);font-size:13px">
+      See <a href="RESEARCH.md">RESEARCH.md</a> for the full derivation, the
+      prior-art comparison, and sources.
+    </p>
+  </div>
+</details>
+
+<footer>
+  <p>
+    Everything runs locally: the image is decoded to a canvas, solved in a Web
+    Worker (or on the main thread when opened directly from disk), and rendered
+    back. No analytics, no fonts, no frameworks. The only network request it
+    ever makes is fetching an image URL you explicitly ask for — typed or pasted
+    into the URL field, or dropped onto the drop zone — and your image pixels
+    are never sent anywhere.
+  </p>
+</footer>
+
+</div>
+
+<script src="solver.js"></script>
+<script src="generator.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
